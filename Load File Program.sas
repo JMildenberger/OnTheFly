@@ -1,7 +1,7 @@
 /*Create LP & MFP Loadfiles
   Created by - Intrasectoral SAS Team (Chris Morris, Jerin Varghese, Noah Yosif)
-  Last Modified - 12/28/2016 
-  Modifed by - Chris Morris */
+  Last Modified - 03/02/2017 
+  Modifed by - Jerin Varghese */
 
 /*********************************************/
 /*Read in macro variables from external file */
@@ -262,14 +262,144 @@ run;
 
 %mend CreateLoadFile_1987_97;
 
-/***************************************************/
-/********** Compile LP Load Files 1987-EY **********/
-/***************************************************/
+%CreateLoadFile_1997_EY (filepath = &filepath_lp);
+%CreateLoadFile_1987_97 (filepath = &filepath_lp);
+
+/********************************************************************/
+/********** Create Full IntraSectoral Matrix for 1987-1997 **********/
+/********************************************************************/
+libname LP1997 "J:\SAS Testing\IntraSectoral\Libraries\LP\1997\";
+
+%macro Create8797Matrix;
+
+%do i = 1987 %to 1997;
+
+	Proc Sql;
+	Create table work.FullRatios1997 as
+	Select		a.Consumer, a.Producer, a.Value as FinalResults, b.Value as Shipments, 
+				a.Value/b.Value as Ratio 
+	From		LP1997.finalresults1997 a
+	Join		work.Shipments1997 b
+	On			a.Producer = b.IndustryCodeID
+	Where		Consumer <> 'NonMan' AND Consumer <> 'NonManf';
+
+	Create table work.finalresults&i as
+	Select		b.Consumer, b.Producer, a.Year, a.YearID, Case when SubStr(a.YearID, 2, 2) = '10' then 10 else 9 end as CensusPeriodID,
+				(a.Value*b.Ratio)/1000 as Value
+	From		work.Shipments8797 a
+	Join		work.FullRatios1997 b
+	On			a.IndustryCodeID = b.Producer
+	Where		Year = &i
+	Order by 	YearID, Consumer, Producer;
+	Quit;
+
+	data intra.finalresults&i;
+	set work.finalresults&i;
+	run;
+
+%end;
+
+Proc Sql;
+
+	Create table work.matrix 
+	(Consumer char, Producer char, Year num, YearID char, CensusPeriodID num, Value num);
+
+	%do year = 1987 %to 1997;
+
+		Create table work.matrix as
+		Select	*	from	work.matrix union all
+		Select	*	from	work.finalresults&year
+		Order by	YearID, Consumer, Producer;
+
+	%end;
+
+Quit;
+
+data intra.matrix;
+set work.matrix;
+run;
+
+%mend Create8797Matrix;
+
+%Create8797Matrix;
+
+/*****************************************************/
+/********** Compile All FinalResults Tables **********/
+/*****************************************************/
 
 libname final "J:\SAS Testing\IntraSectoral\Libraries\Final";
 
-%CreateLoadFile_1997_EY (filepath = &filepath_lp);
-%CreateLoadFile_1987_97 (filepath = &filepath_lp);
+%macro CreateFinalResults87EY;
+
+data work.finalresults;
+set work.matrix;
+run;
+
+%do x = 1997 %to &lastcensus %by 5;
+
+	libname int&x "&filepath_lp&x";
+	%let CensusPeriod = %sysevalf((0.2*&x) - 388.4);
+
+	%if &x < &lastcensus %then %do;
+
+		%do year = &x %to &x+5;
+
+			%let Yearno=%eval(&year-&x+1);
+			%let YearID=C&CensusPeriod.Y&YearNo.A01;
+
+			Proc Sql;
+				Create table	work.finalresults&year as
+				Select			Consumer, Producer, &Year as Year, "&YearID" as YearID, &CensusPeriod as CensusPeriodID, Value
+				from			int&x..finalresults&year;
+
+				Create table work.finalresults as
+				(Select	*	from	work.finalresults union all
+				Select	*	from	work.finalresults&year
+				Where		Consumer <> 'NonManf' AND Producer <> 'NonManf')
+				Order by	YearID, Consumer, Producer;
+
+			Quit;
+
+		%end;
+
+	%end;
+
+	%else %do;
+
+		%do year = &x %to &lastyear;
+
+			%let Yearno=%eval(&year-&x+1);
+			%let YearID=C&CensusPeriod.Y&YearNo.A01;
+
+			Proc Sql;
+				Create table	work.finalresults&year as
+				Select			Consumer, Producer, &Year as Year, "&YearID" as YearID, &CensusPeriod as CensusPeriodID, Value
+				from			int&x..finalresults&year;
+
+				Create table work.finalresults as
+				(Select	*	from	work.finalresults union all
+				Select	*	from	work.finalresults&year
+				Where		Consumer <> 'NonManf' AND Producer <> 'NonManf')
+				Order by	YearID, Consumer, Producer;
+
+			Quit;
+
+		%end;
+
+	%end;
+
+%end;
+
+data final.finalresults;
+set work.finalresults;
+run;
+
+%mend CreateFinalResults87EY;
+%CreateFinalResults87EY;
+
+/***************************************************/
+/********** Compile LP Load Files 1987-EY **********/
+/***************************************************/
 
 %macro concat_LPPaste;
 Proc sql;
@@ -346,3 +476,4 @@ quit;
 %mend concat_MFPPaste;
 
 %concat_MFPPaste;
+
